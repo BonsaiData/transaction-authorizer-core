@@ -13,6 +13,7 @@ import com.github.bonsaidata.authorizer.repository.TransactionRepository;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.util.Optional;
@@ -29,14 +30,17 @@ public class TransactionAuthorizerService {
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
     private final StringRedisTemplate redisTemplate;
+    private final TransactionTemplate transactionTemplate;
 
     public TransactionAuthorizerService(
             AccountRepository accountRepository,
             TransactionRepository transactionRepository,
-            StringRedisTemplate redisTemplate) {
+            StringRedisTemplate redisTemplate,
+            TransactionTemplate transactionTemplate) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.redisTemplate = redisTemplate;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @Transactional
@@ -47,7 +51,8 @@ public class TransactionAuthorizerService {
                 request.holderName(),
                 request.initialBalance()
         );
-        return AccountResponse.from(accountRepository.save(account));
+        Account saved = accountRepository.save(account);
+        return AccountResponse.from(saved);
     }
 
     @Transactional(readOnly = true)
@@ -57,45 +62,51 @@ public class TransactionAuthorizerService {
         return AccountResponse.from(account);
     }
 
-    @Transactional
     public TransactionResponse authorize(String idempotencyKey, AuthorizeTransactionRequest request) {
         String redisKey = IDEMPOTENCY_PREFIX + idempotencyKey;
 
-        Optional<Transaction> existingTx = transactionRepository.findByIdempotencyKey(idempotencyKey);
-        if (existingTx.isPresent()) {
-            return TransactionResponse.from(existingTx.get());
-        }
-
         Boolean acquired = redisTemplate.opsForValue().setIfAbsent(redisKey, PROCESSING_STATE, LOCK_TTL);
+
         if (Boolean.FALSE.equals(acquired)) {
             String currentState = redisTemplate.opsForValue().get(redisKey);
-            if (PROCESSING_STATE.equals(currentState)) {
+
+            if (PROCESSING_STATE.equals(currentState) || currentState == null) {
                 throw new DuplicateIdempotencyConflictException(idempotencyKey);
             }
+
             return transactionRepository.findByIdempotencyKey(idempotencyKey)
                     .map(TransactionResponse::from)
                     .orElseThrow(() -> new DuplicateIdempotencyConflictException(idempotencyKey));
         }
 
         try {
-            Account account = accountRepository.findByIdWithLock(request.accountId())
-                    .orElseThrow(() -> new AccountNotFoundException(request.accountId()));
-
-            Transaction transaction;
-            if (account.hasSufficientBalance(request.amount())) {
-                account.debit(request.amount());
-                accountRepository.save(account);
-                transaction = Transaction.approved(account.getId(), idempotencyKey, request.amount());
-            } else {
-                transaction = Transaction.rejected(account.getId(), idempotencyKey, request.amount(), "INSUFFICIENT_BALANCE");
-            }
-
-            Transaction savedTx = transactionRepository.save(transaction);
+            Transaction savedTx = transactionTemplate.execute(status -> processTransaction(idempotencyKey, request));
             redisTemplate.opsForValue().set(redisKey, savedTx.getStatus().name(), COMPLETED_TTL);
             return TransactionResponse.from(savedTx);
         } catch (RuntimeException ex) {
             redisTemplate.delete(redisKey);
             throw ex;
         }
+    }
+
+    private Transaction processTransaction(String idempotencyKey, AuthorizeTransactionRequest request) {
+        Optional<Transaction> existing = transactionRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+
+        Account account = accountRepository.findByIdWithLock(request.accountId())
+                .orElseThrow(() -> new AccountNotFoundException(request.accountId()));
+
+        Transaction transaction;
+        if (account.hasSufficientBalance(request.amount())) {
+            account.debit(request.amount());
+            accountRepository.save(account);
+            transaction = Transaction.approved(account.getId(), idempotencyKey, request.amount());
+        } else {
+            transaction = Transaction.rejected(account.getId(), idempotencyKey, request.amount(), "INSUFFICIENT_BALANCE");
+        }
+
+        return transactionRepository.save(transaction);
     }
 }
