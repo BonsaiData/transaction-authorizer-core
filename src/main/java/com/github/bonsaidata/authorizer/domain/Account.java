@@ -39,7 +39,6 @@ public class Account {
         this.document = document;
         this.holderName = holderName;
         this.balance = initialBalance;
-        // version fica null aqui para o Spring Data JPA identificar que a entidade é NOVA (persist vs merge)
         this.createdAt = OffsetDateTime.now();
         this.updatedAt = OffsetDateTime.now();
     }

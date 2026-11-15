@@ -61,13 +61,11 @@ public class TransactionAuthorizerService {
     public TransactionResponse authorize(String idempotencyKey, AuthorizeTransactionRequest request) {
         String redisKey = IDEMPOTENCY_PREFIX + idempotencyKey;
 
-        // idempotency key aqui! Um jeito prático do cliente não querer te esganar por fazer um pix repetido
         Optional<Transaction> existingTx = transactionRepository.findByIdempotencyKey(idempotencyKey);
         if (existingTx.isPresent()) {
             return TransactionResponse.from(existingTx.get());
         }
 
-        // Lock na chave do redis, evita de processar simultaneamente e quebrar
         Boolean acquired = redisTemplate.opsForValue().setIfAbsent(redisKey, PROCESSING_STATE, LOCK_TTL);
         if (Boolean.FALSE.equals(acquired)) {
             String currentState = redisTemplate.opsForValue().get(redisKey);
@@ -80,7 +78,6 @@ public class TransactionAuthorizerService {
         }
 
         try {
-            // PESSIMISTIC_WRITE lock e PostgreSQL aqui, não perde.
             Account account = accountRepository.findByIdWithLock(request.accountId())
                     .orElseThrow(() -> new AccountNotFoundException(request.accountId()));
 
