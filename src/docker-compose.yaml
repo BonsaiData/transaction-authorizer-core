@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: authorizer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authorizer_db
+      POSTGRES_USER: ${DB_USER:-authorizer_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-Ch4v3_F0rt3_L0c4l_99!}
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-authorizer_admin} -d authorizer_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: authorizer-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-R3d1s_S3cur3_L0c4l_88!} --appendonly yes
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-R3d1s_S3cur3_L0c4l_88!}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
